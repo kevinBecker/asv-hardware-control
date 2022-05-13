@@ -22,7 +22,7 @@ int demo_count = 0;
 int throttle;    //Servo PWM setting for motor speed. Full fwd: 2000, neutral: 1500, full ast: 1000
 Servo esc;              //object to control brushless motor with esc
 double throttleSetpoint = 0;
-String outMsg = "";
+String outMsg;
 
 // General variables
 static unsigned long lastLoop = 0;
@@ -35,11 +35,12 @@ void setup() {
     Serial.println("<Arduino is ready>");
 }
 
-long previousMillis_serial;
-long previousMillis_actuator;
-long previousMillis_polling;
-long missed_msgs;
-long previousMillis_demo;
+long previousMillis_serial = 0;
+long previousMillis_actuator = 0;
+long previousMillis_polling = 0;
+long missed_msgs = 0;
+long previousMillis_demo = 0;
+long analog_offset = 0;
 
 
 void loop() {
@@ -47,54 +48,20 @@ void loop() {
     unsigned long currentMillis = millis();
 
     
-    
-    if (currentMillis - previousMillis_demo > DEMO_WAIT) {
-      Serial.print("Demo count: "); 
-      Serial.println(demo_count);   
-      previousMillis_demo = currentMillis;
-      if (DEMO){
-        if (demo_count == 0){
-          rudderSetpoint = 1;
-          Serial.print("DEMO = ");
-          Serial.println(rudderSetpoint);
-        }
-        if (demo_count == 1){
-          rudderSetpoint = .5;
-          Serial.print("DEMO = ");
-          Serial.println(rudderSetpoint);
-        }
-        if (demo_count == 2){
-          rudderSetpoint = 0;
-          Serial.print("DEMO = ");
-          Serial.println(rudderSetpoint);
-        }
-        if (demo_count == 3){
-          rudderSetpoint = -.5;
-          Serial.print("DEMO = ");
-          Serial.println(rudderSetpoint);
-        }
-        if (demo_count == 4){
-          rudderSetpoint = -1;
-          Serial.print("DEMO = ");
-          Serial.println(rudderSetpoint);
-
-        }
-         demo_count ++;
-         if (demo_count == 5){
-          demo_count = 0;
-          Serial.println("reset demo");
-         }
-         
+    if (DEMO){
+      if (currentMillis - previousMillis_demo > DEMO_WAIT) {
+        previousMillis_demo = currentMillis;
+        runDemo();
       }
     }
 
     //accepts data from the serial
     if (currentMillis - previousMillis_serial > SERIAL_PERIOD) {
         previousMillis_serial = currentMillis;
+        Serial.println(outMsg);
         if (newData) {
             missed_msgs = 0;
             //parse data from serial
-            Serial.println(outMsg);
             parseInput(receivedChars);
             newData = false;
             hasFirstMsg = true;            
@@ -127,24 +94,23 @@ void setupLA() {
     pinMode(LA_IN1, OUTPUT);
     pinMode(LA_IN2, OUTPUT);
 
+
     if (SELF_CALIBRATE){
       Serial.println("Calibrating rudder...");
       rudderLA.fwd();
       delay(TIME_TO_ENDS);
-      int a = analogRead(LA_POT);
+      analog_high = analogRead(LA_POT);
       Serial.print("LA limit 1 = ");
-      Serial.println(a);
+      Serial.println(analog_low);
       rudderLA.reverse();
       delay(TIME_TO_ENDS);
-      int b = analogRead(LA_POT);
+      analog_low = analogRead(LA_POT);
       Serial.print("LA limit 2 = ");
-      Serial.println(b);
-      rudderLA.brake();
-      ANALOG_HIGH = max(a,b) - ANALOG_OFFSET;
-      ANALOG_LOW = min(a,b) + ANALOG_OFFSET;
+      Serial.println(analog_low);
+      rudderLA.brake();  
       rudderError = 1;
     }
-    
+    analog_offset = (analog_high - analog_low) * OFFSET;
 }
 
 double calculateRudderError() {
@@ -158,9 +124,9 @@ double calculateRudderError() {
     rudderError = newError;
 }
 
-//scales the input to be between 1 and -1 using ANALOG_HIGH and LOW as the min and max
+//scales the input to be between 1 and -1 using analog_high and LOW as the min and max
 double scalePotentiometerInput(int input) {
-    return 2 / (ANALOG_HIGH - ANALOG_LOW) * ((double)input - ANALOG_HIGH) + 1;
+    return 2 / (analog_high - analog_low) * ((double)input - analog_high) + 1;
 }
 
 double pulse_counter;
@@ -171,42 +137,41 @@ void updateRudder() {
       Serial.println(error);
     }
     if (abs(error) > RUDDER_TOLERANCE) {
-      
-      // if it is far from error=0, goes at full speed
-      if (abs(error) > SLOWDOWN_RANGE){
-        pulse_counter = 0;
-        if(error > 0) {
-          rudderLA.fwd();
-          outMsg = "Driving rudder forward";
-        } else if(error < 0) {
-          rudderLA.reverse();
-          outMsg = "Driving rudder reverse";
+        // if it is far from error=0, goes at full speed
+        if (abs(error) > SLOWDOWN_RANGE){
+            pulse_counter = 0;
+            if(error > 0) {
+              rudderLA.fwd();
+              outMsg = "Driving rudder forward";
+            } else if(error < 0) {
+              rudderLA.reverse();
+              outMsg = "Driving rudder reverse";
+            }
         }
-      }
-      // if the error is low but still outside the tolerence
-      // runs at a lower speed by pulsing the output
-      else{
-        pulse_counter += SLOWDOWN_SPEED;
-
-        // Move rudder
-        if (pulse_counter >= 1){
-          pulse_counter --;
-          if(error > 0) {
-            rudderLA.fwd();
-            outMsg = "Pulsing rudder forward";
-          }
-          else if(error < 0) {
-            rudderLA.reverse();
-            outMsg = "Pulsing rudder reverse";
-          }
-        }
-        // Pause ruder
-        else {
-          rudderLA.brake();
-          outMsg = "Pulsing rudder brake";
-        }
-      }		
-    } 
+        // if the error is low but still outside the tolerence
+        // runs at a lower speed by pulsing the output
+        else{
+            pulse_counter += SLOWDOWN_SPEED;
+    
+            // Move rudder
+            if (pulse_counter >= 1){
+              pulse_counter --;
+              if(error > 0) {
+                rudderLA.fwd();
+                outMsg = "Pulsing rudder forward";
+              }
+              else if(error < 0) {
+                rudderLA.reverse();
+                outMsg = "Pulsing rudder reverse";
+              }
+            }
+            // Pause ruder
+            else {
+              rudderLA.brake();
+              outMsg = "Pulsing rudder brake";
+            }
+         }		
+      } 
     else {
         rudderLA.brake();
         outMsg = "Braking rudder";
@@ -305,4 +270,44 @@ void parseInput(String input) {
 // Implementation of signum
 template <typename T> int sgn(T val) {
     return (T(0) < val) - (val < T(0));
+}
+
+
+
+void runDemo(){
+   Serial.print("Demo count: "); 
+        Serial.println(demo_count);   
+        previousMillis_demo = currentMillis;
+        if (demo_count == 0){
+          rudderSetpoint = 1;
+          Serial.print("DEMO = ");
+          Serial.println(rudderSetpoint);
+        }
+        if (demo_count == 1){
+          rudderSetpoint = .5;
+          Serial.print("DEMO = ");
+          Serial.println(rudderSetpoint);
+        }
+        if (demo_count == 2){
+          rudderSetpoint = 0;
+          Serial.print("DEMO = ");
+          Serial.println(rudderSetpoint);
+        }
+        if (demo_count == 3){
+          rudderSetpoint = -.5;
+          Serial.print("DEMO = ");
+          Serial.println(rudderSetpoint);
+        }
+        if (demo_count == 4){
+          rudderSetpoint = -1;
+          Serial.print("DEMO = ");
+          Serial.println(rudderSetpoint);
+
+        }
+         demo_count ++;
+         if (demo_count == 5){
+          demo_count = 0;
+          Serial.println("reset demo");
+         }
+   }
 }
